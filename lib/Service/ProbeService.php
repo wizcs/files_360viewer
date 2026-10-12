@@ -7,13 +7,14 @@ namespace OCA\Files360viewer\Service;
 use OCP\Files\File;
 
 final class ProbeService {
-	private const FFPROBE = '/usr/lib/jellyfin-ffmpeg/ffprobe';
+	public function __construct(private MediaToolService $tools) {
+	}
 
 	/** @return array{duration: float, bitRate: int} */
 	public function probe(File $file, FileAccessService $files): array {
 		$path = $files->localPath($file);
 		$command = implode(' ', array_map('escapeshellarg', [
-			self::FFPROBE, '-v', 'error', '-show_entries', 'format=duration,bit_rate:stream=codec_type,width,height,avg_frame_rate,pix_fmt', '-of', 'json', $path,
+			$this->tools->ffprobe(), '-v', 'error', '-show_entries', 'format=duration,bit_rate:stream=codec_type,width,height,avg_frame_rate,pix_fmt', '-of', 'json', $path,
 		]));
 		$descriptor = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
 		$process = proc_open($command, $descriptor, $pipes);

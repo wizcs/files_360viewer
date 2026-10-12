@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.42
+
+- Restore the complete frontend source and reproducible build configuration.
+- Resolve FFmpeg and FFprobe from app configuration, common paths, or `PATH`.
+- Document server requirements and AI-assisted development.
+
 ## 0.1.41
 
 - Correct OSV vertical orientation in the equirectangular output.

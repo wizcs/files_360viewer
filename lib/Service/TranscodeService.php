@@ -6,11 +6,10 @@ namespace OCA\Files360viewer\Service;
 use OCP\Files\File;
 
 final class TranscodeService {
-	private const FFMPEG = '/usr/lib/jellyfin-ffmpeg/ffmpeg';
 	private const RUNTIME = __DIR__ . '/../../runtime';
 	private ?bool $vaapiAvailable = null;
 
-	public function __construct(private FileAccessService $files) {
+	public function __construct(private FileAccessService $files, private MediaToolService $tools) {
 	}
 
 	public function start(array $session, ?string $requestedProfile = null): array {
@@ -175,7 +174,7 @@ final class TranscodeService {
 
 	/** @return list<string> */
 	private function buildCommand(array $paths, string $extension, int $rate, string $outDir, string $log, int $width = 1280, int $height = 640): array {
-		$args = [self::FFMPEG, '-hide_banner', '-nostdin', '-y', '-filter_complex_threads', '2'];
+		$args = [$this->tools->ffmpeg(), '-hide_banner', '-nostdin', '-y', '-filter_complex_threads', '2'];
 		$vaapi = $this->canUseVaapi();
 		if ($vaapi) {
 			$args = array_merge($args, ['-vaapi_device', '/dev/dri/renderD128']);
@@ -226,12 +225,17 @@ final class TranscodeService {
 		if ($this->vaapiAvailable !== null) {
 			return $this->vaapiAvailable;
 		}
-		if (!is_readable('/dev/dri/renderD128') || !is_writable('/dev/dri/renderD128') || !is_executable(self::FFMPEG)) {
+		try {
+			$ffmpeg = $this->tools->ffmpeg();
+		} catch (\RuntimeException) {
+			return $this->vaapiAvailable = false;
+		}
+		if (!is_readable('/dev/dri/renderD128') || !is_writable('/dev/dri/renderD128')) {
 			return $this->vaapiAvailable = false;
 		}
 		$descriptor = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
 		$probe = [
-			self::FFMPEG, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-vaapi_device', '/dev/dri/renderD128',
+			$ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-vaapi_device', '/dev/dri/renderD128',
 			'-f', 'lavfi', '-i', 'color=size=1280x640:rate=1:duration=0.2',
 			'-vf', 'format=nv12,hwupload,scale_vaapi=w=1280:h=640',
 			'-frames:v', '1', '-c:v', 'h264_vaapi', '-f', 'null', '-',

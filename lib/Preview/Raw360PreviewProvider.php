@@ -11,8 +11,10 @@ use OCP\Image;
 use OCP\Preview\IProviderV2;
 
 final class Raw360PreviewProvider implements IProviderV2 {
-	private const FFMPEG = '/usr/lib/jellyfin-ffmpeg/ffmpeg';
 	private const TIMEOUT_SECONDS = 8;
+
+	public function __construct(private \OCA\Files360viewer\Service\MediaToolService $tools) {
+	}
 
 	public function getMimeType(): string {
 		return '#^video/x-(insv|osv)$#';
@@ -46,7 +48,7 @@ final class Raw360PreviewProvider implements IProviderV2 {
 
 			$width = min(512, max(2, $maxX));
 			$height = min(256, max(2, $maxY));
-			$args = [self::FFMPEG, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-ss', '1'];
+			$args = [$this->tools->ffmpeg(), '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-ss', '1'];
 			foreach ($paths as $path) {
 				$args[] = '-i';
 				$args[] = $path;

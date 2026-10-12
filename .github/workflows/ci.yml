@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node --test tests/*.mjs
+      - name: PHP syntax check
+        run: find lib -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: XML syntax check
+        run: python3 -c "import xml.etree.ElementTree as ET; ET.parse('appinfo/info.xml')"

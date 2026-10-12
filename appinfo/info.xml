@@ -4,7 +4,7 @@
   <name>360 Raw Viewer</name>
   <summary>Authenticated server-stitched HLS playback for Insta360 INSV and DJI Osmo 360 OSV originals</summary>
   <description>Streams read-only 360 camera originals through a server-side dual-fisheye stitch and equirectangular HLS pipeline, with authenticated range delivery, seek, audio and adaptive bitrate playback.</description>
-  <version>0.1.41</version>
+  <version>0.1.42</version>
   <licence>AGPL-3.0-or-later</licence>
   <author>Nextcloud 360 Viewer contributors</author>
   <namespace>Files360viewer</namespace>
@@ -22,5 +22,9 @@
     <post-migration><step>OCA\Files360viewer\Migration\MimeTypeRepairStep</step></post-migration>
   </repair-steps>
   <commands><command>OCA\Files360viewer\Command\RegisterMimeTypes</command><command>OCA\Files360viewer\Command\CleanupRuntime</command></commands>
-  <dependencies><nextcloud min-version="34" max-version="34"/></dependencies>
+  <dependencies>
+    <nextcloud min-version="34"/>
+    <command>ffmpeg</command>
+    <command>ffprobe</command>
+  </dependencies>
 </info>
