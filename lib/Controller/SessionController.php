@@ -19,7 +19,7 @@ final class SessionController extends ApiController {
 			$body = $this->jsonBody();
 			$fileId = filter_var($body['fileId'] ?? null, FILTER_VALIDATE_INT);
 			$mode = (string)($body['mode'] ?? 'transcode');
-			if ($fileId === false || !in_array($mode, ['direct','transcode'], true)) {
+			if ($fileId === false || !in_array($mode, ['direct','direct-osv','transcode'], true)) {
 				throw new \RuntimeException('invalid_session_request', 400);
 			}
 			$bitrate = isset($body['targetBitrateMbps']) ? (int)$body['targetBitrateMbps'] : null;
@@ -31,7 +31,13 @@ final class SessionController extends ApiController {
 			foreach (array_keys($s['inputFileIds']) as $inputIndex) {
 				$sourceUrls[] = $this->urlGenerator->linkToRoute('files_360viewer.source.read', ['sessionId' => $s['id']]) . ($inputIndex === 0 ? '' : '?input=' . $inputIndex);
 			}
-			return new JSONResponse(['sessionId' => $s['id'], 'state' => $s['state'], 'mode' => $s['mode'], 'fileId' => $s['fileId'], 'name' => $s['name'], 'size' => $s['size'], 'durationSeconds' => $s['durationSeconds'], 'bitratesMbps' => $s['bitratesMbps'], 'profiles' => $s['profiles'], 'defaultProfile' => $s['defaultProfile'] ?? null, 'expiresAt' => date(DATE_ATOM, $s['expiresAt']), 'sourceUrl' => $sourceUrls[0], 'sourceUrls' => $sourceUrls, 'statusUrl' => $this->urlGenerator->linkToRoute('files_360viewer.status.show', ['sessionId' => $s['id']]), 'transcodeUrl' => $this->urlGenerator->linkToRoute('files_360viewer.transcode.create', ['sessionId' => $s['id']]), 'capabilities' => ['seek' => true,'viewPan' => true,'audio' => true,'equirectangular' => true,'availableBitratesMbps' => $s['bitratesMbps'], 'direct' => true, 'transcode' => true]]);
+			$directUrls = [];
+			if (($s['mode'] ?? '') === 'direct-osv') {
+				foreach ([0, 1] as $inputIndex) {
+					$directUrls[] = $this->urlGenerator->linkToRoute('files_360viewer.hls.read', ['sessionId' => $s['id'], 'variant' => 'v' . $inputIndex, 'file' => 'index.m3u8']);
+				}
+			}
+			return new JSONResponse(['sessionId' => $s['id'], 'state' => $s['state'], 'mode' => $s['mode'], 'fileId' => $s['fileId'], 'name' => $s['name'], 'size' => $s['size'], 'durationSeconds' => $s['durationSeconds'], 'bitratesMbps' => $s['bitratesMbps'], 'profiles' => $s['profiles'], 'defaultProfile' => $s['defaultProfile'] ?? null, 'expiresAt' => date(DATE_ATOM, $s['expiresAt']), 'sourceUrl' => $sourceUrls[0], 'sourceUrls' => $sourceUrls, 'directUrls' => $directUrls, 'statusUrl' => $this->urlGenerator->linkToRoute('files_360viewer.status.show', ['sessionId' => $s['id']]), 'transcodeUrl' => $this->urlGenerator->linkToRoute('files_360viewer.transcode.create', ['sessionId' => $s['id']]), 'capabilities' => ['seek' => true,'viewPan' => true,'audio' => true,'equirectangular' => true,'availableBitratesMbps' => $s['bitratesMbps'], 'direct' => true, 'transcode' => true]]);
 		} catch (\Throwable $e) {
 			return $this->error($e);
 		}

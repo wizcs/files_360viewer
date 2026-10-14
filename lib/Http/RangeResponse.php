@@ -38,7 +38,7 @@ final class RangeResponse extends Response implements ICallbackResponse {
 		stream_set_timeout($this->handle, 1);
 		$left = $this->length;
 		while ($left > 0 && !feof($this->handle)) {
-			$chunk = fread($this->handle, min(1024 * 1024, $left));
+			$chunk = fread($this->handle, min(4 * 1024 * 1024, $left));
 			if ($chunk === false || $chunk === '') {
 				break;
 			}

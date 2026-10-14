@@ -17,6 +17,9 @@ final class TranscodeService {
 		if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
 			throw new \RuntimeException('runtime_directory_failed', 500);
 		}
+		if (($session['mode'] ?? '') === 'direct-osv') {
+			return $this->startDirectOsv($session, $dir, $requestedProfile);
+		}
 		$statePath = $dir . '/state.json';
 		$state = is_file($statePath) ? json_decode((string)file_get_contents($statePath), true) : null;
 		if (is_array($state) && in_array($state['state'] ?? '', ['queued', 'processing', 'ready'], true)) {
@@ -68,6 +71,96 @@ final class TranscodeService {
 		return $state;
 	}
 
+	private function startDirectOsv(array $session, string $dir, ?string $requestedProfile): array {
+		$statePath = $dir . '/state.json';
+		$existing = is_file($statePath) ? json_decode((string)file_get_contents($statePath), true) : null;
+		if (is_array($existing) && in_array($existing['state'] ?? '', ['processing', 'ready'], true)) {
+			if ($requestedProfile !== null) $this->startReducedOsvProfile($session, $existing, $statePath, $requestedProfile);
+			return $this->status($session);
+		}
+		$inputFiles = [];
+		foreach (array_map('intval', $session['inputFileIds'] ?? [$session['fileId']]) as $id) {
+			$inputFiles[] = $this->files->requireReadableFile($id);
+		}
+		$source = $this->files->localPath($inputFiles[0] ?? throw new \RuntimeException('no_media_inputs', 404));
+		$calibrationDir = $dir . '/v0';
+		if (!is_dir($calibrationDir) && !mkdir($calibrationDir, 0700, true) && !is_dir($calibrationDir)) throw new \RuntimeException('runtime_variant_directory_failed', 500);
+		$recipe = $calibrationDir . '/calibration-recipe.json';
+		file_put_contents($recipe, json_encode(['source' => $source, 'directory' => $calibrationDir, 'width' => 1, 'height' => 1, 'eye' => 3840, 'command' => [$this->tools->ffmpeg()]], JSON_THROW_ON_ERROR), LOCK_EX);
+		$calibration = proc_open(['/usr/bin/python3', __DIR__ . '/../../scripts/osv-ffmpeg-worker.py', $recipe, '--calibration-only'], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $calibrationPipes);
+		if (!is_resource($calibration)) throw new \RuntimeException('osv_calibration_launch_failed', 500);
+		$calibrationError = stream_get_contents($calibrationPipes[2]) ?: '';
+		fclose($calibrationPipes[1]); fclose($calibrationPipes[2]);
+		if (proc_close($calibration) !== 0 || !is_file($calibrationDir . '/calibration.json')) throw new \RuntimeException('osv_calibration_failed: ' . trim($calibrationError), 500);
+		$calibrationData = json_decode((string)file_get_contents($calibrationDir . '/calibration.json'), true);
+		$sourceWidth = (int)($calibrationData['source'][0] ?? 3840);
+		$sourceHeight = (int)($calibrationData['source'][1] ?? $sourceWidth);
+		$width = $sourceWidth;
+		$height = $sourceHeight;
+		$profiles = [
+			['id' => 'v0', 'width' => $width, 'height' => $height, 'bitrateMbps' => 0, 'label' => 'OSV 原片·无损'],
+			['id' => 'v1', 'width' => $width, 'height' => $height, 'bitrateMbps' => 0, 'label' => 'OSV 原片·无损'],
+		];
+		// Two synchronized fisheye variants per choice. A selection never
+		// requires the expensive CPU equirectangular reprojection pipeline.
+		foreach ([['size' => 1920, 'rate' => 12], ['size' => 1440, 'rate' => 7], ['size' => 960, 'rate' => 4]] as $choice) {
+			$scaledWidth = min($sourceWidth, $choice['size']);
+			$scaledHeight = (int)(round($sourceHeight * $scaledWidth / $sourceWidth / 2) * 2);
+			foreach ([0, 1] as $eyeIndex) {
+				$profiles[] = ['id' => 'v' . count($profiles), 'width' => $scaledWidth, 'height' => $scaledHeight, 'bitrateMbps' => $choice['rate'], 'label' => '快速', 'eyeIndex' => $eyeIndex];
+			}
+		}
+		$state = ['sessionId' => $session['id'], 'expiresAt' => (int)($session['expiresAt'] ?? (time() + 1800)), 'state' => 'processing', 'progress' => 0, 'startedAt' => microtime(true), 'bitratesMbps' => [0], 'profiles' => $profiles, 'width' => $width, 'height' => $height, 'master' => null, 'variants' => [], 'logs' => [], 'decode' => 'source-hevc', 'encoder' => 'copy', 'calibration' => is_array($calibrationData) ? $calibrationData : null];
+		foreach (array_slice($profiles, 0, 2) as $profile) {
+			$variantDir = $dir . '/' . $profile['id'];
+			if (!is_dir($variantDir) && !mkdir($variantDir, 0700, true) && !is_dir($variantDir)) throw new \RuntimeException('runtime_variant_directory_failed', 500);
+			$log = $dir . '/ffmpeg-' . $profile['id'] . '.log';
+			$streamIndex = (int)substr($profile['id'], 1);
+			$args = [$this->tools->ffmpeg(), '-hide_banner', '-nostdin', '-y', '-threads', '2', '-i', $source, '-map', '0:v:' . $streamIndex];
+			if ($streamIndex === 0) $args = array_merge($args, ['-map', '0:a:0?']);
+			$args = array_merge($args, ['-c:v', 'copy', '-tag:v', 'hvc1', '-c:a', 'copy', '-f', 'hls', '-hls_time', '1', '-hls_playlist_type', 'event', '-hls_list_size', '0', '-hls_flags', 'independent_segments+temp_file', '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4', '-hls_segment_filename', $variantDir . '/seg_%05d.m4s', $variantDir . '/index.m3u8']);
+			$state['variants'][$profile['id']] = ['bitrateMbps' => 0, 'pid' => $this->launch($args, $log), 'requested' => true, 'playable' => false, 'width' => $width, 'height' => $height, 'playlist' => $profile['id'] . '/index.m3u8', 'log' => 'ffmpeg-' . $profile['id'] . '.log'];
+		}
+		foreach (array_slice($profiles, 2) as $profile) {
+			$state['variants'][$profile['id']] = ['bitrateMbps' => $profile['bitrateMbps'], 'pid' => 0, 'requested' => false, 'playable' => false, 'width' => $profile['width'], 'height' => $profile['height'], 'playlist' => $profile['id'] . '/index.m3u8', 'log' => 'ffmpeg-' . $profile['id'] . '.log'];
+		}
+		$this->writeState($statePath, $state);
+		return $state;
+	}
+
+	private function startReducedOsvProfile(array $session, array $state, string $statePath, string $requestedProfile): void {
+		$index = (int)substr($requestedProfile, 1);
+		if (!preg_match('/^v[246]$/', $requestedProfile) || !isset($state['variants'][$requestedProfile], $state['variants']['v' . ($index + 1)])) {
+			throw new \RuntimeException('unknown_profile', 400);
+		}
+		$source = $this->files->localPath($this->files->requireReadableFile((int)$session['fileId']));
+		$dir = dirname($statePath);
+		$vaapi = $this->canUseVaapi();
+		foreach ([$index, $index + 1] as $variantIndex) {
+			$id = 'v' . $variantIndex;
+			if ($state['variants'][$id]['requested'] ?? false) continue;
+			$profile = $state['profiles'][$variantIndex];
+			$out = $dir . '/' . $id;
+			if (!is_dir($out) && !mkdir($out, 0700, true) && !is_dir($out)) throw new \RuntimeException('runtime_variant_directory_failed', 500);
+			$eye = $variantIndex - $index;
+			$args = [$this->tools->ffmpeg(), '-hide_banner', '-nostdin', '-y', '-threads', '2'];
+			if ($vaapi) $args = array_merge($args, ['-hwaccel', 'vaapi', '-hwaccel_device', '/dev/dri/renderD128', '-hwaccel_output_format', 'vaapi']);
+			$args = array_merge($args, ['-i', $source, '-map', '0:v:' . $eye]);
+			if ($eye === 0) $args = array_merge($args, ['-map', '0:a:0?']);
+			$width = (int)$profile['width']; $height = (int)$profile['height']; $rate = (int)$profile['bitrateMbps'];
+			if ($vaapi) {
+				$args = array_merge($args, ['-vf', "fps=30,scale_vaapi=w={$width}:h={$height}:format=nv12", '-c:v', 'h264_vaapi', '-b:v', $rate . 'M', '-maxrate', $rate . 'M', '-bufsize', ($rate * 2) . 'M']);
+			} else {
+				$args = array_merge($args, ['-vf', "fps=30,scale={$width}:{$height}:flags=fast_bilinear,format=yuv420p", '-c:v', 'libx264', '-preset', 'ultrafast', '-b:v', $rate . 'M', '-maxrate', $rate . 'M', '-bufsize', ($rate * 2) . 'M']);
+			}
+			$args = array_merge($args, ['-g', '30', '-keyint_min', '30', '-sc_threshold', '0', '-c:a', 'aac', '-b:a', '128k', '-f', 'hls', '-hls_time', '1', '-hls_playlist_type', 'event', '-hls_list_size', '0', '-hls_flags', 'independent_segments+temp_file', '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4', '-hls_segment_filename', $out . '/seg_%05d.m4s', $out . '/index.m3u8']);
+			$state['variants'][$id]['pid'] = $this->launch($args, $dir . '/ffmpeg-' . $id . '.log');
+			$state['variants'][$id]['requested'] = true;
+		}
+		$state['state'] = 'processing';
+		$this->writeState($statePath, $state);
+	}
+
 	public function status(array $session): array {
 		$dir = self::RUNTIME . '/' . $session['id'];
 		$path = $dir . '/state.json';
@@ -98,7 +191,7 @@ final class TranscodeService {
 		$state['playable'] = $playable > 0;
 		$state['variants'] = $variants;
 		$state['progress'] = $requested > 0 ? $done / $requested : 0;
-		if ($requested === count($variants) && $done === $requested) {
+		if ($requested > 0 && $done === $requested) {
 			$state['state'] = 'ready';
 			$state['readyAt'] ??= microtime(true);
 		} elseif ($this->hasFailure($dir, $variants) && $playable === 0) {
@@ -129,6 +222,11 @@ final class TranscodeService {
 		if (!is_dir($variantDir) && !mkdir($variantDir, 0700, true) && !is_dir($variantDir)) throw new \RuntimeException('runtime_variant_directory_failed', 500);
 		$log = $dir . '/ffmpeg-' . $profileId . '.log';
 		$args = $this->buildCommand($paths, $session['extension'] ?? '', (int)$profile['bitrateMbps'], $variantDir, $log, (int)$profile['width'], (int)$profile['height']);
+		if (($session['extension'] ?? '') === 'osv' && $this->canUseOsvCalibration()) {
+			$recipe = $variantDir . '/recipe.json';
+			file_put_contents($recipe, json_encode(['source' => $paths[0], 'directory' => $variantDir, 'width' => (int)$profile['width'], 'height' => (int)$profile['height'], 'eye' => (int)$profile['height'], 'command' => $args], JSON_THROW_ON_ERROR), LOCK_EX);
+			$args = ['/usr/bin/python3', __DIR__ . '/../../scripts/osv-ffmpeg-worker.py', $recipe];
+		}
 		$variants[$profileId]['pid'] = $this->launch($args, $log);
 		$variants[$profileId]['requested'] = true;
 		$state['variants'] = $variants;
@@ -174,27 +272,42 @@ final class TranscodeService {
 
 	/** @return list<string> */
 	private function buildCommand(array $paths, string $extension, int $rate, string $outDir, string $log, int $width = 1280, int $height = 640): array {
-		$args = [$this->tools->ffmpeg(), '-hide_banner', '-nostdin', '-y', '-filter_complex_threads', '2'];
-		$vaapi = $this->canUseVaapi();
+		// Each HEVC lens decoder and libx264 already slice-thread internally. Keep
+		// the graph scheduler bounded to avoid oversubscribing the two remap paths.
+		$args = [$this->tools->ffmpeg(), '-hide_banner', '-nostdin', '-y', '-filter_complex_threads', '1'];
+		// Radeon VAAPI on this host accepts up to 4096 pixels wide. Keep the
+		// full 4320-wide 8K panorama on the tuned CPU path, but use GPU decode/
+		// encode for 4K and smaller profiles when the render device is available.
+		$vaapi = $width <= 4096 && $this->canUseVaapi();
 		if ($vaapi) {
-			$args = array_merge($args, ['-vaapi_device', '/dev/dri/renderD128']);
+			$args = array_merge($args, ['-init_hw_device', 'vaapi=vaapi0:/dev/dri/renderD128', '-filter_hw_device', 'vaapi0']);
 		}
 		$isOsv = strtolower($extension) === 'osv';
+		$calibratedOsv = $isOsv && $this->canUseOsvCalibration();
 		foreach ($paths as $path) {
 			$args = array_merge($args, ['-threads','2']);
-			if ($vaapi) $args = array_merge($args, ['-hwaccel','vaapi','-hwaccel_device','/dev/dri/renderD128','-hwaccel_output_format','vaapi']);
+			if ($vaapi) $args = array_merge($args, ['-hwaccel','vaapi','-hwaccel_device','vaapi0','-hwaccel_output_format','vaapi']);
 			$args[] = '-i';
 			$args[] = $path;
 		}
 		$hwDownload = $vaapi ? (strtolower($extension) === 'osv' ? 'hwdownload,format=p010le,format=yuv420p,' : 'hwdownload,format=nv12,') : '';
-		if ($isOsv) {
-			// Both fisheye streams are projected on CPU; VAAPI surfaces are downloaded
-			// before v360, then uploaded for encoding. Profiles remain <=2160 high.
+		if ($isOsv && $calibratedOsv) {
 			$eye = $height;
-			// The OSV camera pair is already stitched correctly, but its source
-			// coordinate system is vertically inverted. Flip only the final
-			// equirectangular frame so yaw, seam, and all other projection details stay unchanged.
-			$filter = '[0:v:0]' . $hwDownload . 'scale=' . $eye . ':' . $eye . ':flags=fast_bilinear[a];[0:v:1]' . $hwDownload . 'scale=' . $eye . ':' . $eye . ':flags=fast_bilinear[b];[a][b]hstack=inputs=2,v360=input=dfisheye:output=equirect:ih_fov=190:iv_fov=190:interp=linear,vflip,scale=' . $width . ':' . $height . ':flags=fast_bilinear[v360]';
+			// Static maps are generated in the background from this file's factory
+			// intrinsics, KB5 coefficients and body-to-lens quaternions. Preserve
+			// the rectangular sensor crop in high-speed recordings. Drop frames
+			// before CPU projection, so a 240 fps source only projects 30 fps.
+			foreach (['osv-0-x.pgm', 'osv-0-y.pgm', 'osv-1-x.pgm', 'osv-1-y.pgm', 'osv-blend.pgm'] as $map) {
+				$args = array_merge($args, ['-threads', '1', '-f', 'image2', '-loop', '1', '-framerate', '30', '-i', $outDir . '/' . $map]);
+			}
+			$filter = '[0:v:0]' . $hwDownload . 'fps=30,scale=' . $eye . ':OSV_EYE_HEIGHT:flags=bilinear,format=gbrp,setsar=1[a];'
+				. '[0:v:1]' . $hwDownload . 'fps=30,scale=' . $eye . ':OSV_EYE_HEIGHT:flags=bilinear,format=gbrp,setsar=1[b];'
+				. '[a][1:v][2:v]remap[pa];[b][3:v][4:v]remap[pb];'
+				. '[5:v]format=gray[mask];[pa][pb][mask]maskedmerge,format=yuv420p[v360]';
+		} elseif ($isOsv) {
+			$eye = $height;
+			// Safe fallback for installations without the optional NumPy worker.
+			$filter = '[0:v:0]' . $hwDownload . 'scale=' . $eye . ':' . $eye . ':flags=fast_bilinear[a];[0:v:1]' . $hwDownload . 'scale=' . $eye . ':' . $eye . ':flags=fast_bilinear[b];[a][b]hstack=inputs=2,v360=input=dfisheye:output=equirect:ih_fov=194:iv_fov=194:yaw=90:rorder=ryp:interp=linear,scale=' . $width . ':' . $height . ':flags=fast_bilinear[v360]';
 		} else {
 			$eye = $height;
 			$filter = '[0:v:0]' . $hwDownload . 'transpose=1,scale=' . $eye . ':' . $eye . ':flags=fast_bilinear[a];[1:v:0]' . $hwDownload . 'scale=' . $eye . ':' . $eye . ':flags=fast_bilinear,transpose=2[b];[a][b]hstack=inputs=2,v360=input=dfisheye:output=equirect:ih_fov=188.5:iv_fov=188.5:interp=linear,scale=' . $width . ':' . $height . ':flags=fast_bilinear[v360]';
@@ -210,9 +323,11 @@ final class TranscodeService {
 			'-filter_complex', $filter,
 			'-map', '[v360]', '-map', '0:a:0?',
 			...$videoCodec,
-			'-r', '30', '-threads','2', '-g', '120', '-keyint_min', '120', '-sc_threshold', '0', ...$pixelFormat,
+			'-r', '30', '-threads','2', '-g', '30', '-keyint_min', '30', '-sc_threshold', '0', ...$pixelFormat,
 			'-c:a', 'aac', '-b:a', '128k', '-ac', '2',
-			'-f', 'hls', '-hls_time', '4', '-hls_playlist_type', 'event', '-hls_list_size', '0',
+			// A one-second first segment makes the fast preview responsive while
+			// keeping the event playlist stable for the browser's HLS loader.
+			'-shortest', '-flush_packets', '1', '-max_delay', '0', '-f', 'hls', '-hls_time', '1', '-hls_playlist_type', 'event', '-hls_list_size', '0',
 			'-hls_flags', 'independent_segments+temp_file', '-hls_segment_type', 'fmp4',
 			'-hls_fmp4_init_filename', 'init.mp4',
 			'-hls_segment_filename', $outDir . '/seg_%05d.m4s',
@@ -225,17 +340,12 @@ final class TranscodeService {
 		if ($this->vaapiAvailable !== null) {
 			return $this->vaapiAvailable;
 		}
-		try {
-			$ffmpeg = $this->tools->ffmpeg();
-		} catch (\RuntimeException) {
-			return $this->vaapiAvailable = false;
-		}
-		if (!is_readable('/dev/dri/renderD128') || !is_writable('/dev/dri/renderD128')) {
+		if (!is_readable('/dev/dri/renderD128') || !is_writable('/dev/dri/renderD128') || !is_executable($this->tools->ffmpeg())) {
 			return $this->vaapiAvailable = false;
 		}
 		$descriptor = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
 		$probe = [
-			$ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-vaapi_device', '/dev/dri/renderD128',
+			$this->tools->ffmpeg(), '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-vaapi_device', '/dev/dri/renderD128',
 			'-f', 'lavfi', '-i', 'color=size=1280x640:rate=1:duration=0.2',
 			'-vf', 'format=nv12,hwupload,scale_vaapi=w=1280:h=640',
 			'-frames:v', '1', '-c:v', 'h264_vaapi', '-f', 'null', '-',
@@ -269,6 +379,17 @@ final class TranscodeService {
 		$closedExit = proc_close($process);
 		$exitCode = ($closedExit >= 0) ? $closedExit : (int)($status['exitcode'] ?? -1);
 		return $this->vaapiAvailable = !$running && $exitCode === 0;
+	}
+
+	private function canUseOsvCalibration(): bool {
+		static $available;
+		if ($available !== null) return $available;
+		$worker = __DIR__ . '/../../scripts/osv-ffmpeg-worker.py';
+		if (!is_readable($worker) || !is_executable('/usr/bin/python3')) return $available = false;
+		$probe = proc_open(['/usr/bin/python3', '-c', 'import numpy'], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+		if (!is_resource($probe)) return $available = false;
+		foreach ($pipes as $pipe) fclose($pipe);
+		return $available = proc_close($probe) === 0;
 	}
 
 	private function launch(array $args, string $log): int {
@@ -309,7 +430,7 @@ final class TranscodeService {
 		$logs = $variants ? array_map(fn (array $variant): string => $dir . '/' . ($variant['log'] ?? ''), array_filter($variants, static fn (array $variant): bool => (bool)($variant['requested'] ?? false))) : (glob($dir . '/ffmpeg-*.log') ?: []);
 		foreach ($logs as $log) {
 			$text = (string)file_get_contents($log);
-			if (str_contains($text, 'Conversion failed') || str_contains($text, 'Error reinitializing filters')) {
+			if (str_contains($text, 'Conversion failed') || str_contains($text, 'Error reinitializing filters') || str_contains($text, 'ModuleNotFoundError')) {
 				return true;
 			}
 		}

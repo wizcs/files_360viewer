@@ -52,7 +52,9 @@ final class HlsController extends ApiController {
 				throw new \RuntimeException('hls_open_failed', 500);
 			}
 			$response = new RangeResponse($handle, $start, $end - $start + 1, $size, $mime, sha1($path . ':' . $size . ':' . filemtime($path)), $partial ? 206 : 200);
-			$response->addHeader('Cache-Control', 'private, max-age=60');
+			// Growing manifests must be revalidated on every fetch. Only completed
+			// segments/init objects are immutable within a session.
+			$response->addHeader('Cache-Control', str_ends_with($file, '.m3u8') ? 'private, no-store' : 'private, max-age=300');
 			return $response;
 		} catch (\Throwable $e) {
 			return $this->error($e);

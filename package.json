@@ -1,1 +1,1 @@
-{"name":"files-360viewer","private":true,"type":"module","scripts":{"build":"vite build"},"dependencies":{"@nextcloud/files":"^4.1.0","@vitejs/plugin-vue":"^5.2.4","hls.js":"^1.7.3","three":"^0.180.0","typescript":"^5.7.3","vite":"^6.1.0","vue":"^3.5.13"}}
+{"name":"files-360viewer","private":true,"type":"module","scripts":{"build":"vite build"},"dependencies":{"@nextcloud/files":"^4.1.0","@nextcloud/l10n":"^3.4.1","@vitejs/plugin-vue":"^5.2.4","hls.js":"^1.7.3","three":"^0.180.0","typescript":"^5.7.3","vite":"^6.1.0","vue":"^3.5.13"}}

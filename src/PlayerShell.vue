@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref } from 'vue'
 import Hls from 'hls.js'
+import { tr } from './i18n'
 
 const w = window as any
 const apiBase = w.OC?.generateUrl('/apps/files_360viewer/api/v1') || '/index.php/apps/files_360viewer/api/v1'
@@ -18,6 +19,7 @@ const playing = ref(false)
 const durationSeconds = ref(0)
 let hls: Hls | null = null
 let timer = 0
+const tx = tr
 
 function webdavUrl(path = '') {
   const prefix = w.OC?.generateUrl(`/remote.php/dav/files/${encodeURIComponent(user)}`) || `/remote.php/dav/files/${encodeURIComponent(user)}`
@@ -68,7 +70,7 @@ async function selectPickedPath(pickedPath: string) {
   const prop = row?.getElementsByTagNameNS('DAV:', 'prop')[0]
   const fileId = Number(prop?.getElementsByTagNameNS('http://owncloud.org/ns', 'fileid')[0]?.textContent || 0)
   const name = path.split('/').pop() || path
-  if (!fileId || !/\.(insv|osv)$/i.test(name)) throw new Error('请选择 .insv 或 .osv 文件')
+  if (!fileId || !/\.(insv|osv)$/i.test(name)) throw new Error(tx('Select a .osv or .insv file'))
   const entry = { name, path, fileId, isDir: false }
   selected.value = entry
   await play(entry)
@@ -79,11 +81,11 @@ async function api(path: string, init: RequestInit = {}) {
   const response = await fetch(path, { ...init, headers, credentials: 'same-origin' }); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body.error || `${response.status} request failed`); return body
 }
 async function play(entry: any) {
-  stop(); status.value = `${entry.name}：正在准备播放…`; error.value = ''
+  stop(); status.value = `${entry.name}: ${tx('Preparing 360 playback…')}`; error.value = ''
   try {
     const session = await api(`${apiBase}/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileId: entry.fileId, mode: 'transcode' }) }); durationSeconds.value = Number(session.durationSeconds || 0)
     await api(session.transcodeUrl, { method: 'POST' }); const deadline = Date.now() + 15 * 60 * 1000
-    while (Date.now() < deadline) { const s = await api(session.statusUrl); if (s.state === 'ready') { status.value = `${entry.name} · HLS 已就绪`; attach(`${apiBase}/sessions/${session.sessionId}/hls/master/index.m3u8`); return }; if (s.state === 'error') throw new Error(s.error || '转码失败'); status.value = `${entry.name}：服务端拼接 ${Math.round(Number(s.progress || 0) * 100)}%`; await new Promise<void>(resolve => { timer = window.setTimeout(resolve, 900) }) }
+    while (Date.now() < deadline) { const s = await api(session.statusUrl); if (s.state === 'ready') { status.value = `${entry.name} · ${tx('HLS ready, click play')}`; attach(`${apiBase}/sessions/${session.sessionId}/hls/master/index.m3u8`); return }; if (s.state === 'error') throw new Error(s.error || 'Transcode failed'); status.value = `${entry.name}: ${tx('Stitching and transcoding… {progress}% · duration {duration}').replace('{progress}', String(Math.round(Number(s.progress || 0) * 100))).replace('{duration}', formatDuration(durationSeconds.value))}`; await new Promise<void>(resolve => { timer = window.setTimeout(resolve, 900) }) }
     throw new Error('转码超时')
   } catch (e: any) { error.value = e?.message || String(e); status.value = '无法播放' }
 }
@@ -98,7 +100,7 @@ async function attach(url: string) {
       let recoveryAttempts = 0
       hls = new Hls({ enableWorker: false, lowLatencyMode: false, xhrSetup: xhr => { xhr.withCredentials = true } })
       hls.on(Hls.Events.MEDIA_ATTACHED, () => hls?.loadSource(url))
-      hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => { levels.value = data.levels; bitrate.value = hls?.currentLevel ?? 0; status.value = `${selected.value?.name || ''} · HLS 已就绪，可播放` })
+      hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => { levels.value = data.levels; bitrate.value = hls?.currentLevel ?? 0; status.value = `${selected.value?.name || ''} · ${tx('HLS ready, click play')}` })
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (!data.fatal) return
         if (recoveryAttempts < 2 && data.type === Hls.ErrorTypes.NETWORK_ERROR) { recoveryAttempts += 1; hls?.startLoad(); return }
@@ -108,25 +110,26 @@ async function attach(url: string) {
       hls.attachMedia(target)
     } else if (target.canPlayType('application/vnd.apple.mpegurl')) {
       target.src = url
-      target.addEventListener('loadedmetadata', () => { status.value = `${selected.value?.name || ''} · HLS 已就绪，可播放` }, { once: true })
+      target.addEventListener('loadedmetadata', () => { status.value = `${selected.value?.name || ''} · ${tx('HLS ready, click play')}` }, { once: true })
     } else throw new Error('浏览器不支持 HLS/MSE')
   } catch (e: any) { error.value = e?.message || String(e) }
 }
 function chooseBitrate(index: number) { bitrate.value = index; if (hls) hls.currentLevel = index }
 function toggle() { if (!video.value) return; if (video.value.paused) void video.value.play(); else video.value.pause() }
 function stop() { if (timer) clearTimeout(timer); hls?.destroy(); hls = null; if (video.value) { video.value.pause(); video.value.removeAttribute('src'); video.value.load() }; playing.value = false; durationSeconds.value = 0 }
+function formatDuration(value: number) { if (!Number.isFinite(value) || value <= 0) return '00:00'; const seconds = Math.floor(value); return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` }
 onMounted(() => browse(''))
 onBeforeUnmount(stop)
 </script>
 
 <template>
   <main class="nc360-page">
-    <header><h1>360 原片</h1><span class="sub">选择文件即可播放</span></header>
+    <header><h1>{{ tx('360 Videos') }}</h1><span class="sub">{{ tx('Select a file to play') }}</span></header>
     <section class="picker">
-      <div class="picker-bar"><button @click="openOfficialPicker">从 Files 选择</button><span>{{ currentPath || '全部文件' }}</span><span><button v-if="currentPath" @click="browse(currentPath.split('/').slice(0,-1).join('/'))">上一级</button><button @click="browse(currentPath)">刷新</button></span></div>
-      <p v-if="loading">正在读取文件列表…</p><p v-else-if="!entries.length">此目录没有可显示的项目。进入 NAS1 或 NAS2 后选择 .osv/.insv。</p>
-      <button v-for="entry in entries" :key="entry.path" class="entry" :class="{folder:entry.isDir}" @click="choose(entry)"><span>{{ entry.isDir ? '文件夹' : '360 视频' }}</span><b>{{ entry.name }}</b><small v-if="!entry.isDir">{{ entry.fileId ? `ID ${entry.fileId}` : '未找到文件 ID' }}</small></button>
+      <div class="picker-bar"><button @click="openOfficialPicker">{{ tx('From Files') }}</button><span>{{ currentPath || 'All files' }}</span><span><button v-if="currentPath" @click="browse(currentPath.split('/').slice(0,-1).join('/'))">{{ tx('Up') }}</button><button @click="browse(currentPath)">{{ tx('Refresh') }}</button></span></div>
+      <p v-if="loading">{{ tx('Loading file list…') }}</p><p v-else-if="!entries.length">{{ tx('No playable items in this folder. Open NAS1 or NAS2 and select an .osv or .insv file.') }}</p>
+      <button v-for="entry in entries" :key="entry.path" class="entry" :class="{folder:entry.isDir}" @click="choose(entry)"><span>{{ entry.isDir ? tx('Folder') : tx('360 video') }}</span><b>{{ entry.name }}</b><small v-if="!entry.isDir">{{ entry.fileId ? `ID ${entry.fileId}` : 'File ID unavailable' }}</small></button>
     </section>
-    <section v-if="selected" class="player"><div class="player-title">{{ selected.name }}</div><video ref="video" class="video" controls playsinline preload="metadata" @play="playing=true" @pause="playing=false"></video><div class="controls"><button @click="toggle">{{ playing ? '暂停' : '播放' }}</button><label>码率 <select :value="bitrate" @change="chooseBitrate(Number(($event.target as HTMLSelectElement).value))"><option v-for="(level,index) in levels" :key="index" :value="index">{{ Math.round(level.bitrate / 1000000) || (index ? 10 : 5) }} Mbps</option></select></label><span v-if="durationSeconds">总时长 {{ Math.floor(durationSeconds / 60).toString().padStart(2, '0') }}:{{ Math.floor(durationSeconds % 60).toString().padStart(2, '0') }}</span><span>{{ status }}</span></div><p v-if="error" class="error">{{ error }}</p></section>
+    <section v-if="selected" class="player"><div class="player-title">{{ selected.name }}</div><video ref="video" class="video" controls playsinline preload="metadata" @play="playing=true" @pause="playing=false"></video><div class="controls"><button @click="toggle">{{ playing ? tx('Pause') : tx('Play') }}</button><label>{{ tx('Bitrate') }} <select :value="bitrate" @change="chooseBitrate(Number(($event.target as HTMLSelectElement).value))"><option v-for="(level,index) in levels" :key="index" :value="index">{{ Math.round(level.bitrate / 1000000) || (index ? 10 : 5) }} Mbps</option></select></label><span v-if="durationSeconds">{{ formatDuration(durationSeconds) }}</span><span>{{ status }}</span></div><p v-if="error" class="error">{{ error }}</p></section>
   </main>
 </template>

@@ -11,6 +11,7 @@ final class MediaSessionService {
 	private const TTL = 1800;
 	private const RUNTIME = __DIR__ . '/../../runtime';
 	private const CLEANUP_GRACE = 3600;
+	private const RUNTIME_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
 	public function __construct(private ISession $session, private ISecureRandom $random, private FileAccessService $files, private ProbeService $probe) {
 	}
 	public function create(int $fileId, string $mode, ?int $bitrate): array {
@@ -22,25 +23,37 @@ final class MediaSessionService {
 		$sourceBitrate = max(array_map(static fn (array $p): int => $p['bitRate'], $probes));
 		$sourceMbps = $sourceBitrate > 0 ? $sourceBitrate / 1000000 : 20.0;
 		$sourceWidth = min(array_column($probes, 'width'));
+		$sourceHeight = min(array_column($probes, 'height'));
 		$extension = strtolower(pathinfo($file->getName(), PATHINFO_EXTENSION));
+		if ($extension === 'osv' && $mode === 'direct') {
+			// OSV is served as calibrated, lossless dual-stream HLS by default.
+			$mode = 'direct-osv';
+		}
 		$profiles = [];
-		// OSV is served at the source panorama dimensions. Its choices change
-		// bitrate only; this keeps the browser's projection scale stable while
-		// still offering a small range for slower clients and a source-quality
-		// option for local networks.
+		// OSV profiles keep the equirectangular 2:1 shape while offering a fast
+		// preview and selectable native-size outputs for local networks.
 		$presets = $extension === 'osv'
 			? []
 			: [['height'=>640, 'rate'=>3], ['height'=>960, 'rate'=>6], ['height'=>1280, 'rate'=>10], ['height'=>1920, 'rate'=>16]];
 		if ($extension === 'osv') {
-			$nativeHeight = min(2160, max(640, (int)min(array_column($probes, 'width'))));
-			// Keep the native panorama dimensions while exposing several bitrate-only
-			// choices. The high source profile remains available for local networks.
-			foreach ([8, 12, 16, 24, 32, 48, 64] as $nativeRate) {
+			$nativeHeight = $sourceHeight < $sourceWidth
+				? min(2160, max(640, $sourceHeight))
+				: min(2160, max(640, (int)$sourceWidth));
+			// Start with a small panorama so the first HLS segment is available
+			// quickly; full native output remains selectable in the bitrate menu.
+			$presets = [
+				['height'=>min($nativeHeight, 960), 'rate'=>8, 'label'=>'快速预览'],
+				['height'=>min($nativeHeight, 1280), 'rate'=>12, 'label'=>'流畅'],
+			];
+			foreach ([16, 24, 32, 48, 64] as $nativeRate) {
 				$presets[] = ['height'=>$nativeHeight, 'rate'=>$nativeRate, 'label'=>$nativeRate >= 32 ? '原始尺寸' : '原始尺寸·降码率'];
 			}
 		}
 		foreach ($presets as $preset) {
-			$height = min($preset['height'], (int)(floor($sourceWidth / 2) * 2));
+			$maxHeight = $extension === 'osv' && $sourceHeight < $sourceWidth
+				? $sourceHeight
+				: (int)(floor($sourceWidth / 2) * 2);
+			$height = min($preset['height'], $maxHeight);
 			$rate = max(1, min($preset['rate'], (int)ceil($sourceMbps * 0.8)));
 			if (array_filter($profiles, static fn(array $p): bool => $p['height'] === $height && $p['bitrateMbps'] === $rate)) continue;
 			$profile = ['id'=>'v'.count($profiles), 'width'=>$height*2, 'height'=>$height, 'bitrateMbps'=>$rate];
@@ -49,8 +62,12 @@ final class MediaSessionService {
 		}
 		$bitrates = array_column($profiles, 'bitrateMbps');
 		$defaultProfile = null;
+		if ($extension === 'osv' && isset($profiles[0]['id'])) {
+			$defaultProfile = $profiles[0]['id'];
+		}
 		$defaultDistance = PHP_INT_MAX;
 		foreach ($profiles as $profile) {
+			if ($defaultProfile !== null) break;
 			$distance = abs((int)$profile['bitrateMbps'] - ($extension === 'osv' ? 24 : 10));
 			if ($distance < $defaultDistance) {
 				$defaultDistance = $distance;
@@ -119,7 +136,46 @@ final class MediaSessionService {
 			$this->removeRuntime(basename($dir));
 			$count++;
 		}
+		$count += $this->enforceRuntimeLimit();
 		return $count;
+	}
+
+	/** Keep old completed sessions from filling the disk with full OSV remuxes. */
+	private function enforceRuntimeLimit(): int {
+		$dirs = [];
+		$total = 0;
+		foreach (glob(self::RUNTIME . '/*', GLOB_ONLYDIR) ?: [] as $dir) {
+			$state = is_file($dir . '/state.json') ? json_decode((string)file_get_contents($dir . '/state.json'), true) : null;
+			$size = $this->runtimeDirectorySize($dir);
+			$total += $size;
+			$active = false;
+			foreach (is_array($state) ? ($state['variants'] ?? []) : [] as $variant) {
+				$pid = (int)($variant['pid'] ?? 0);
+				if ($pid > 0 && is_file('/proc/' . $pid . '/cmdline')) { $active = true; break; }
+			}
+			// A completed session can still be serving HLS during its TTL. A
+			// processing session without a live FFmpeg PID is stale and may be
+			// reclaimed even if its state file was never updated.
+			if (!$active && is_array($state) && ($state['state'] ?? '') === 'ready' && (int)($state['expiresAt'] ?? 0) > time()) $active = true;
+			if (!$active) $dirs[] = ['path' => $dir, 'size' => $size, 'mtime' => (int)@filemtime($dir)];
+		}
+		usort($dirs, static fn(array $a, array $b): int => $a['mtime'] <=> $b['mtime']);
+		$removed = 0;
+		foreach ($dirs as $candidate) {
+			if ($total <= self::RUNTIME_LIMIT_BYTES) break;
+			$this->removeRuntime(basename($candidate['path']));
+			$total -= $candidate['size'];
+			$removed++;
+		}
+		return $removed;
+	}
+
+	private function runtimeDirectorySize(string $dir): int {
+		$total = 0;
+		foreach (glob($dir . '/*') ?: [] as $path) {
+			$total += is_dir($path) ? $this->runtimeDirectorySize($path) : (int)@filesize($path);
+		}
+		return $total;
 	}
 
 	private function stopProcesses(array $state): void {

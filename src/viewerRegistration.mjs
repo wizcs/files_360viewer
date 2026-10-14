@@ -6,8 +6,8 @@ export function isRawFile(node) {
   return /\.(insv|osv)$/i.test(String(node?.basename || node?.name || node?.filename || ''))
 }
 
-// Nextcloud Viewer registers exact MIME handlers in array order (first wins),
-// then aliases; keep generic video and unknown-file handlers intact.
+// NC 34 Viewer.vue registers exact MIME handlers in array order (first wins),
+// then aliases; openFileInfo prefers the exact MIME over its "video" fallback.
 // Keep generic video and unknown-file handlers intact. Only reserve our formats.
 export function registerRawHandler(viewer, handler) {
   if (!viewer) return false
