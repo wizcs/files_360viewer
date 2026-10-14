@@ -5,10 +5,13 @@
   <summary>Authenticated server-stitched HLS playback for Insta360 INSV and DJI Osmo 360 OSV originals</summary>
   <description>Streams read-only 360 camera originals through a server-side dual-fisheye stitch and equirectangular HLS pipeline, with authenticated range delivery, seek, audio and adaptive bitrate playback.</description>
   <version>0.1.53</version>
-  <licence>agpl</licence>
+  <licence>AGPL-3.0-or-later</licence>
   <author>Nextcloud 360 Viewer contributors</author>
   <namespace>Files360viewer</namespace>
   <category>multimedia</category>
+  <website>https://github.com/wizcs/files_360viewer</website>
+  <repository type="git">https://github.com/wizcs/files_360viewer.git</repository>
+  <bugs>https://github.com/wizcs/files_360viewer/issues</bugs>
   <types><filesystem/></types>
   <navigations>
     <navigation>
