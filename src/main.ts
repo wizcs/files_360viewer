@@ -23,7 +23,7 @@ if (!(w.__files360ActionRegistered)) {
       const node = nodes[0]
       if (!w.OCA?.Viewer?.openWith) return false
       // Use the Files node path so Viewer resolves the full fileInfo from DAV.
-      w.OCA.Viewer.openWith(handler.id, { path: node.path, enableSidebar: false })
+      w.OCA.Viewer.openWith(handler.id, { path: node.path, enableSidebar: true })
       return null
     },
   })

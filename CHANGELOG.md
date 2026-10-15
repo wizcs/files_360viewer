@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.54
+
+- Keep the Files viewer sidebar available when opening a 360 video.
+
 ## 0.1.53
 
 - Add calibrated direct OSV playback and selectable reduced profiles.
