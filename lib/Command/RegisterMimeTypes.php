@@ -15,6 +15,7 @@ final class RegisterMimeTypes extends Command {
 
 	public function __construct(private IMimeTypeLoader $mimeTypeLoader) {
 		parent::__construct();
+		$this->setName('files_360viewer:mime-types');
 		$this->setDescription('Register INSV and OSV MIME types and repair the file cache mapping.');
 	}
 

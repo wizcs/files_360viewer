@@ -14,6 +14,7 @@ final class CleanupRuntime extends Command {
 
 	public function __construct(private MediaSessionService $sessions) {
 		parent::__construct();
+		$this->setName('files_360viewer:cleanup-runtime');
 		$this->setDescription('Remove expired 360 viewer sessions and their transcode artifacts.');
 	}
 

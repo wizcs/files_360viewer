@@ -8,6 +8,7 @@ use OCA\Files360viewer\Service\FileAccessService;
 use OCA\Files360viewer\Service\MediaSessionService;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
 use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
+use OCP\AppFramework\Http\Attribute\PublicPage;
 use OCP\IRequest;
 
 final class SourceController extends ApiController {
@@ -16,15 +17,23 @@ final class SourceController extends ApiController {
 	}
 	#[NoAdminRequired]
 	#[NoCSRFRequired]
+	#[PublicPage]
 	public function read(string $sessionId): \OCP\AppFramework\Http\Response {
 		try {
-			$s = $this->sessions->requireOwned($sessionId);
+			$token = (string)$this->request->getParam('publicToken', '');
+			$s = $token !== '' ? $this->sessions->requirePublicOwned($sessionId, $token) : $this->sessions->requireOwned($sessionId);
 			$inputIndex = (int)$this->request->getParam('input', 0);
 			$inputIds = array_values(array_map('intval', $s['inputFileIds'] ?? [$s['fileId']]));
 			if ($inputIndex < 0 || $inputIndex >= count($inputIds)) {
 				throw new \RuntimeException('invalid_input_index', 400);
 			}
-			$file = $this->files->requireReadableFile($inputIds[$inputIndex]);
+			if ($token !== '') {
+				$publicFile = $s['file'] ?? null;
+				$publicInputs = $publicFile instanceof \OCP\Files\File ? $this->files->resolveMediaInputs($publicFile) : [];
+				$file = $publicInputs[$inputIndex] ?? throw new \RuntimeException('invalid_input_index', 400);
+			} else {
+				$file = $this->files->requireReadableFile($inputIds[$inputIndex]);
+			}
 			$size = (int)$file->getSize();
 			if ($size < 1) {
 				throw new \RuntimeException('empty_source', 416);

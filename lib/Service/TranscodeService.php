@@ -31,8 +31,10 @@ final class TranscodeService {
 		}
 
 		$inputFiles = [];
-		foreach (array_map('intval', $session['inputFileIds'] ?? [$session['fileId']]) as $id) {
-			$inputFiles[] = $this->files->requireReadableFile($id);
+		if (($session['public'] ?? false) && ($session['file'] ?? null) instanceof File) {
+			$inputFiles[] = $session['file'];
+		} else {
+			foreach (array_map('intval', $session['inputFileIds'] ?? [$session['fileId']]) as $id) $inputFiles[] = $this->files->requireReadableFile($id);
 		}
 		if (count($inputFiles) === 0) {
 			throw new \RuntimeException('no_media_inputs', 404);
@@ -79,8 +81,10 @@ final class TranscodeService {
 			return $this->status($session);
 		}
 		$inputFiles = [];
-		foreach (array_map('intval', $session['inputFileIds'] ?? [$session['fileId']]) as $id) {
-			$inputFiles[] = $this->files->requireReadableFile($id);
+		if (($session['public'] ?? false) && ($session['file'] ?? null) instanceof File) {
+			$inputFiles[] = $session['file'];
+		} else {
+			foreach (array_map('intval', $session['inputFileIds'] ?? [$session['fileId']]) as $id) $inputFiles[] = $this->files->requireReadableFile($id);
 		}
 		$source = $this->files->localPath($inputFiles[0] ?? throw new \RuntimeException('no_media_inputs', 404));
 		$calibrationDir = $dir . '/v0';
@@ -101,9 +105,19 @@ final class TranscodeService {
 			['id' => 'v0', 'width' => $width, 'height' => $height, 'bitrateMbps' => 0, 'label' => 'OSV 原片·无损'],
 			['id' => 'v1', 'width' => $width, 'height' => $height, 'bitrateMbps' => 0, 'label' => 'OSV 原片·无损'],
 		];
-		// Two synchronized fisheye variants per choice. A selection never
-		// requires the expensive CPU equirectangular reprojection pipeline.
-		foreach ([['size' => 1920, 'rate' => 12], ['size' => 1440, 'rate' => 7], ['size' => 960, 'rate' => 4]] as $choice) {
+		// Two synchronized fisheye variants per choice. The Radeon VAAPI
+		// encoder on this host cannot encode a 3840x3840 frame (its maximum
+		// height is 2304), so the first browser-compatible H.264 choice must
+		// stay at 1920. The original HEVC streams remain available as v0/v1.
+		// On a software-only host we can also offer an original-size H.264
+		// choice, but never put it ahead of the known compatible 1920 stream.
+		$choices = [['size' => 1920, 'rate' => 12]];
+		if (!$this->canUseVaapi() && $sourceWidth > 1920) {
+			$choices[] = ['size' => $sourceWidth, 'rate' => 32, 'label' => '兼容原尺寸'];
+		}
+		$choices[] = ['size' => 1440, 'rate' => 7];
+		$choices[] = ['size' => 960, 'rate' => 4];
+		foreach ($choices as $choice) {
 			$scaledWidth = min($sourceWidth, $choice['size']);
 			$scaledHeight = (int)(round($sourceHeight * $scaledWidth / $sourceWidth / 2) * 2);
 			foreach ([0, 1] as $eyeIndex) {
@@ -133,7 +147,8 @@ final class TranscodeService {
 		if (!preg_match('/^v[246]$/', $requestedProfile) || !isset($state['variants'][$requestedProfile], $state['variants']['v' . ($index + 1)])) {
 			throw new \RuntimeException('unknown_profile', 400);
 		}
-		$source = $this->files->localPath($this->files->requireReadableFile((int)$session['fileId']));
+		$sourceFile = (($session['public'] ?? false) && ($session['file'] ?? null) instanceof File) ? $session['file'] : $this->files->requireReadableFile((int)$session['fileId']);
+		$source = $this->files->localPath($sourceFile);
 		$dir = dirname($statePath);
 		$vaapi = $this->canUseVaapi();
 		foreach ([$index, $index + 1] as $variantIndex) {
@@ -208,8 +223,12 @@ final class TranscodeService {
 		$variants = $state['variants'] ?? [];
 		if (!isset($variants[$profileId]) || ($variants[$profileId]['requested'] ?? false)) return;
 		$inputFiles = [];
-		foreach (array_map('intval', $session['inputFileIds'] ?? [$session['fileId']]) as $id) {
-			$inputFiles[] = $this->files->requireReadableFile($id);
+		if (($session['public'] ?? false) && ($session['file'] ?? null) instanceof File) {
+			$inputFiles = $this->files->resolveMediaInputs($session['file']);
+		} else {
+			foreach (array_map('intval', $session['inputFileIds'] ?? [$session['fileId']]) as $id) {
+				$inputFiles[] = $this->files->requireReadableFile($id);
+			}
 		}
 		$paths = array_map(fn (File $f): string => $this->files->localPath($f), $inputFiles);
 		$profile = null;

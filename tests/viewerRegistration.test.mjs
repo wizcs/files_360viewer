@@ -14,12 +14,12 @@ function viewer() {
   }
 }
 
-test('raw MIME types take precedence while normal handlers remain available', () => {
+test('raw handler is appended without mutating normal handlers', () => {
   const v = viewer()
   const handler = { id: 'files-360viewer-raw', mimes: RAW_MIMES, component }
   assert.equal(registerRawHandler(v, handler), true)
-  assert.deepEqual(v.availableHandlers[0].mimes, RAW_MIMES)
-  assert.equal(v.availableHandlers.find(h => h.id === 'videos').mimes.includes('video/x-insv'), false)
+  assert.deepEqual(v.availableHandlers.at(-1).mimes, RAW_MIMES)
+  assert.equal(v.availableHandlers.find(h => h.id === 'videos').mimes.includes('video/x-insv'), true)
   assert.equal(v.availableHandlers.find(h => h.id === 'images').mimes[0], 'image/jpeg')
 })
 
@@ -30,7 +30,7 @@ test('pre-init registration is reconciled when Viewer is not ready', () => {
   } }, component)
   win.OCA = { Viewer: viewer() }
   ready()
-  assert.equal(win.OCA.Viewer.availableHandlers[0].id, handler.id)
+  assert.equal(win.OCA.Viewer.availableHandlers.at(-1).id, handler.id)
 })
 
 test('repeated registration is idempotent', () => {

@@ -4,6 +4,7 @@ return [
     'routes' => [
         ['name' => 'page#index', 'url' => '/', 'verb' => 'GET'],
         ['name' => 'session#create', 'url' => '/api/v1/sessions', 'verb' => 'POST'],
+        ['name' => 'public_session#create', 'url' => '/api/v1/public-sessions', 'verb' => 'POST'],
         ['name' => 'session#show', 'url' => '/api/v1/sessions/{sessionId}', 'verb' => 'GET'],
         ['name' => 'session#destroy', 'url' => '/api/v1/sessions/{sessionId}', 'verb' => 'DELETE'],
         ['name' => 'source#read', 'url' => '/api/v1/sessions/{sessionId}/source', 'verb' => 'GET'],

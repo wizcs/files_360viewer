@@ -5,7 +5,9 @@ namespace OCA\Files360viewer\AppInfo;
 
 use OCA\Files\Event\LoadAdditionalScriptsEvent;
 use OCA\Files360viewer\Listener\LoadAdditionalScripts;
+use OCA\Files360viewer\Listener\LoadViewerScripts;
 use OCA\Files360viewer\Preview\Raw360PreviewProvider;
+use OCA\Viewer\Event\LoadViewer;
 use OCP\AppFramework\App;
 use OCP\AppFramework\Bootstrap\IBootContext;
 use OCP\AppFramework\Bootstrap\IBootstrap;
@@ -18,6 +20,7 @@ final class Application extends App implements IBootstrap {
 	}
 	public function register(IRegistrationContext $context): void {
 		$context->registerEventListener(LoadAdditionalScriptsEvent::class, LoadAdditionalScripts::class);
+		$context->registerEventListener(LoadViewer::class, LoadViewerScripts::class);
 		$context->registerPreviewProvider(Raw360PreviewProvider::class, '#^video/x-(insv|osv)$#');
 	}
 	public function boot(IBootContext $context): void {

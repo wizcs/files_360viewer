@@ -6,6 +6,8 @@ namespace OCA\Files360viewer\Controller;
 use OCA\Files360viewer\Service\MediaSessionService;
 use OCA\Files360viewer\Service\TranscodeService;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
+use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
+use OCP\AppFramework\Http\Attribute\PublicPage;
 use OCP\AppFramework\Http\JSONResponse;
 use OCP\IRequest;
 
@@ -14,9 +16,12 @@ final class StatusController extends ApiController {
 		parent::__construct($appName, $request);
 	}
 	#[NoAdminRequired]
+	#[PublicPage]
+	#[NoCSRFRequired]
 	public function show(string $sessionId): JSONResponse {
 		try {
-			$s = $this->sessions->requireOwned($sessionId);
+			$token = (string)$this->request->getParam('publicToken', '');
+			$s = $token !== '' ? $this->sessions->requirePublicOwned($sessionId, $token) : $this->sessions->requireOwned($sessionId);
 			return new JSONResponse($this->transcoder->status($s));
 		} catch (\Throwable $e) {
 			return $this->error($e);

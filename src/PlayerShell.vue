@@ -4,7 +4,10 @@ import Hls from 'hls.js'
 import { tr } from './i18n'
 
 const w = window as any
-const apiBase = w.OC?.generateUrl('/apps/files_360viewer/api/v1') || '/index.php/apps/files_360viewer/api/v1'
+const rootPath = String(w.OC?.webroot || `/${location.pathname.split('/').filter(Boolean)[0] || ''}`).replace(/\/$/, '')
+const apiBase = typeof w.OC?.generateUrl === 'function'
+  ? w.OC.generateUrl('/apps/files_360viewer/api/v1')
+  : `${rootPath}/index.php/apps/files_360viewer/api/v1`
 const user = w.OC?.currentUser || ''
 const currentPath = ref('')
 const entries = ref<any[]>([])
@@ -22,7 +25,9 @@ let timer = 0
 const tx = tr
 
 function webdavUrl(path = '') {
-  const prefix = w.OC?.generateUrl(`/remote.php/dav/files/${encodeURIComponent(user)}`) || `/remote.php/dav/files/${encodeURIComponent(user)}`
+  const prefix = typeof w.OC?.generateUrl === 'function'
+    ? w.OC.generateUrl(`/remote.php/dav/files/${encodeURIComponent(user)}`)
+    : `${rootPath}/remote.php/dav/files/${encodeURIComponent(user)}`
   return `${prefix}/${path.split('/').filter(Boolean).map(encodeURIComponent).join('/')}`
 }
 async function browse(path = currentPath.value) {

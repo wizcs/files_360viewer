@@ -4,7 +4,11 @@ declare(strict_types=1);
 namespace OCA\Files360viewer\Service;
 
 use OCP\ISession;
+use OCP\Files\File;
+use OCP\Files\Folder;
 use OCP\Security\ISecureRandom;
+use OCP\Share\IManager;
+use OCP\Share\Exceptions\ShareNotFound;
 
 final class MediaSessionService {
 	private const PREFIX = 'files_360viewer.session.';
@@ -12,7 +16,25 @@ final class MediaSessionService {
 	private const RUNTIME = __DIR__ . '/../../runtime';
 	private const CLEANUP_GRACE = 3600;
 	private const RUNTIME_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
-	public function __construct(private ISession $session, private ISecureRandom $random, private FileAccessService $files, private ProbeService $probe) {
+	public function __construct(private ISession $session, private ISecureRandom $random, private FileAccessService $files, private ProbeService $probe, private IManager $shares) {
+	}
+	public function createPublic(string $token, string $requestedPath = ''): array {
+		if ($token === '' || !preg_match('/^[A-Za-z0-9]+$/', $token)) throw new \RuntimeException('invalid_share_token', 400);
+		try { $share = $this->shares->getShareByToken($token); } catch (ShareNotFound) { throw new \RuntimeException('share_not_found', 404); }
+		if (($share->getPermissions() & \OCP\Constants::PERMISSION_READ) === 0 || !$share->canSeeContent()) throw new \RuntimeException('share_read_required', 403);
+		$file = $this->resolvePublicFile($share->getNode(), $requestedPath);
+		$inputs = $this->files->resolveMediaInputs($file);
+		$probes = array_map(fn ($input): array => $this->probe->probe($input, $this->files), $inputs);
+		$duration = min(array_map(static fn (array $p): float => $p['duration'], $probes));
+		$sourceBitrate = max(array_map(static fn (array $p): int => $p['bitRate'], $probes));
+		$extension = strtolower(pathinfo($file->getName(), PATHINFO_EXTENSION));
+		if (!in_array($extension, ['osv', 'insv'], true)) throw new \RuntimeException('unsupported_extension', 415);
+		$uid = 'public:' . hash('sha256', $token);
+		$id = $this->random->generate(32, ISecureRandom::CHAR_ALPHANUMERIC);
+		$now = time();
+		$data = ['id'=>$id,'uid'=>$uid,'public'=>true,'shareTokenHash'=>hash('sha256', $token),'sharePath'=>trim(str_replace('\\', '/', $requestedPath), '/'),'fileId'=>(int)$file->getId(),'inputFileIds'=>array_map(static fn ($f): int => (int)$f->getId(), $inputs),'etags'=>array_map(static fn ($f): string => (string)$f->getEtag(), $inputs),'etag'=>(string)$file->getEtag(),'size'=>(int)$file->getSize(),'name'=>$file->getName(),'mime'=>$file->getMimeType(),'extension'=>$extension,'mode'=>$extension === 'osv' ? 'direct-osv' : 'direct','targetBitrateMbps'=>null,'durationSeconds'=>round($duration,3),'sourceBitrate'=>$sourceBitrate,'bitratesMbps'=>[0],'profiles'=>[],'defaultProfile'=>null,'state'=>'ready','createdAt'=>$now,'expiresAt'=>$now+self::TTL];
+		$this->session->set(self::PREFIX.$id, $data);
+		return $data;
 	}
 	public function create(int $fileId, string $mode, ?int $bitrate): array {
 		$this->reapExpired();
@@ -115,6 +137,32 @@ final class MediaSessionService {
 		}
 		$data['file'] = $file;
 		return $data;
+	}
+	public function requirePublicOwned(string $id, string $token): array {
+		$this->reapExpired();
+		if (!preg_match('/^[A-Za-z0-9]{32}$/', $id) || $token === '') throw new \RuntimeException('invalid_public_session', 400);
+		$data = $this->session->get(self::PREFIX.$id);
+		if (!is_array($data) || !($data['public'] ?? false) || ($data['expiresAt'] ?? 0) < time() || !hash_equals((string)($data['shareTokenHash'] ?? ''), hash('sha256', $token))) throw new \RuntimeException('public_session_not_found', 404);
+		try { $share = $this->shares->getShareByToken($token); } catch (ShareNotFound) { throw new \RuntimeException('share_not_found', 404); }
+		if (($share->getPermissions() & \OCP\Constants::PERMISSION_READ) === 0 || !$share->canSeeContent()) throw new \RuntimeException('share_read_required', 403);
+		try {
+			$file = $this->resolvePublicFile($share->getNode(), (string)($data['sharePath'] ?? ''));
+		} catch (\Throwable) {
+			throw new \RuntimeException('source_changed', 409);
+		}
+		if ((string)$file->getEtag() !== (string)($data['etag'] ?? '')) throw new \RuntimeException('source_changed', 409);
+		$data['file'] = $file;
+		return $data;
+	}
+
+	private function resolvePublicFile(object $sharedNode, string $requestedPath): File {
+		$path = trim(str_replace('\\', '/', $requestedPath), '/');
+		if ($path !== '' && (str_contains($path, '..') || str_contains($path, "\0"))) {
+			throw new \RuntimeException('invalid_share_path', 400);
+		}
+		$node = $path === '' ? $sharedNode : ($sharedNode instanceof Folder ? $sharedNode->get($path) : ($sharedNode instanceof File && basename($path) === $sharedNode->getName() ? $sharedNode : null));
+		if (!$node instanceof File) throw new \RuntimeException($path === '' ? 'shared_folder_not_supported' : 'shared_file_not_found', 415);
+		return $node;
 	}
 	public function delete(string $id): void {
 		$this->requireOwned($id);

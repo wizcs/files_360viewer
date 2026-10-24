@@ -16,7 +16,9 @@ final class LoadAdditionalScripts implements IEventListener {
 	public function handle(Event $event): void {
 		if ($event instanceof LoadAdditionalScriptsEvent) {
 			$uri = $this->request->getRequestUri();
-			if (!str_contains($uri, '/apps/files') && !str_contains($uri, '/apps/files_360viewer')) {
+			// The full app shell belongs only to the dedicated 360 app page. Files
+			// and public shares receive the lightweight Viewer bridge instead.
+			if (!preg_match('#/(?:index\.php/)?apps/files_360viewer(?:/|$)#', $uri)) {
 				return;
 			}
 			Util::addScript('files_360viewer', 'main');

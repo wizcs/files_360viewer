@@ -15,13 +15,13 @@ final class MediaToolService {
 
 	public function ffmpeg(): string {
 		return $this->resolve('ffmpeg_path', 'ffmpeg', [
-			'/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/lib/jellyfin-ffmpeg/ffmpeg',
+			'/usr/lib/jellyfin-ffmpeg/ffmpeg', '/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg',
 		]);
 	}
 
 	public function ffprobe(): string {
 		return $this->resolve('ffprobe_path', 'ffprobe', [
-			'/usr/bin/ffprobe', '/usr/local/bin/ffprobe', '/usr/lib/jellyfin-ffmpeg/ffprobe',
+			'/usr/lib/jellyfin-ffmpeg/ffprobe', '/usr/bin/ffprobe', '/usr/local/bin/ffprobe',
 		]);
 	}
 

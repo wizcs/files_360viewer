@@ -3,11 +3,13 @@
 declare(strict_types=1);
 namespace OCA\Files360viewer\Controller;
 
+use OCA\Files360viewer\Http\ManifestResponse;
 use OCA\Files360viewer\Http\RangeResponse;
 use OCA\Files360viewer\Service\MediaSessionService;
 use OCA\Files360viewer\Service\TranscodeService;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
 use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
+use OCP\AppFramework\Http\Attribute\PublicPage;
 use OCP\AppFramework\Http\Response;
 use OCP\IRequest;
 
@@ -18,10 +20,27 @@ final class HlsController extends ApiController {
 
 	#[NoAdminRequired]
 	#[NoCSRFRequired]
+	#[PublicPage]
 	public function read(string $sessionId, string $variant, string $file): Response {
 		try {
-			$session = $this->sessions->requireOwned($sessionId);
+			$token = (string)$this->request->getParam('publicToken', '');
+			$session = $token !== '' ? $this->sessions->requirePublicOwned($sessionId, $token) : $this->sessions->requireOwned($sessionId);
 			[$path, $mime] = $this->transcoder->artifact($session, $variant, $file);
+			$publicToken = (string)$this->request->getParam('publicToken', '');
+			if (str_ends_with($file, '.m3u8') && $publicToken !== '') {
+				$manifest = (string)file_get_contents($path);
+				$manifest = preg_replace_callback('/^(?!#)(.+)$/m', static function (array $m) use ($publicToken): string {
+					$uri = trim($m[1]);
+					if ($uri === '' || str_contains($uri, '?')) return $uri;
+					return $uri . '?publicToken=' . rawurlencode($publicToken);
+				}, $manifest) ?? $manifest;
+				$manifest = preg_replace_callback('/URI="([^"]+)"/', static function (array $m) use ($publicToken): string {
+					$uri = $m[1];
+					if ($uri === '' || str_contains($uri, '?')) return $m[0];
+					return 'URI="' . $uri . '?publicToken=' . rawurlencode($publicToken) . '"';
+				}, $manifest) ?? $manifest;
+				return new ManifestResponse($manifest, sha1($path . ':' . filesize($path) . ':' . filemtime($path) . ':' . $publicToken));
+			}
 			$range = $this->request->getHeader('Range');
 			$size = (int)filesize($path);
 			$start = 0;
