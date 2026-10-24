@@ -4,7 +4,7 @@
     "Select a file to play": "选择一个 .osv 或 .insv 文件",
     "From Files": "从 Files 选择",
     "Loading file list…": "正在读取文件列表…",
-    "No playable items in this folder. Open NAS1 or NAS2 and select an .osv or .insv file.": "此目录没有可显示的项目。进入 NAS1 或 NAS2 后选择 .osv/.insv。",
+    "No playable items in this folder. Open a folder containing an .osv or .insv file.": "此目录没有可显示的项目。请打开包含 .osv 或 .insv 文件的文件夹。",
     "Folder": "文件夹",
     "360 video": "360 视频",
     "Refresh": "刷新",

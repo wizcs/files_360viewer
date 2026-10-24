@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.91
+
+- Replace environment-specific folder names in the empty-state guidance.
+
 ## 0.1.90
 
 - Add permission-checked playback from public Nextcloud share links.
